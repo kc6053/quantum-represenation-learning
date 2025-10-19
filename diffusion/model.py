@@ -24,19 +24,22 @@ class Block(nn.Module):
     """
     A basic convolutional block with two convolutions, group normalization, and SiLU activation.
     """
-    def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
+    def __init__(self, in_ch, out_ch, time_emb_dim, up=False, apply_transform=True):
         super().__init__()
         self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
-        if up:
-            self.conv1 = nn.Conv2d(2*in_ch, out_ch, 3, padding=1)
-            self.transform = nn.ConvTranspose2d(out_ch, out_ch, 4, 2, 1)
-        else:
-            self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
-            self.transform = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
+        self.apply_transform = apply_transform
+
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
         self.bnorm1 = nn.BatchNorm2d(out_ch)
         self.bnorm2 = nn.BatchNorm2d(out_ch)
         self.relu  = nn.ReLU()
+
+        if apply_transform:
+            if up:
+                self.transform = nn.ConvTranspose2d(out_ch, out_ch, 4, 2, 1)
+            else:
+                self.transform = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
         
     def forward(self, x, t, ):
         # First Conv
@@ -49,8 +52,11 @@ class Block(nn.Module):
         h = h + time_emb
         # Second Conv
         h = self.bnorm2(self.relu(self.conv2(h)))
-        # Down or Upsample
-        return self.transform(h)
+        # Down or Upsample if required
+        if self.apply_transform:
+            return self.transform(h)
+        else:
+            return h
 
 
 class UNet(nn.Module):
@@ -72,11 +78,13 @@ class UNet(nn.Module):
         self.down2 = Block(64, 128, time_emb_dim=time_emb_dim)
         
         # --- Bottleneck ---
-        self.bot1 = Block(128, 256, time_emb_dim=time_emb_dim)
+        # The bottleneck should not downsample further, so apply_transform is False.
+        self.bot1 = Block(128, 256, time_emb_dim=time_emb_dim, apply_transform=False)
 
         # --- Upsampling Path ---
-        self.up1 = Block(256, 128, time_emb_dim=time_emb_dim, up=True)
-        self.up2 = Block(128, 64, time_emb_dim=time_emb_dim, up=True)
+        # The in_ch for upsampling blocks is the sum of channels from the skip connection and the previous upsampled layer.
+        self.up1 = Block(256 + 128, 128, time_emb_dim=time_emb_dim, up=True)
+        self.up2 = Block(128 + 64, 64, time_emb_dim=time_emb_dim, up=True)
         
         # --- Final Layer ---
         # The output of the U-Net is the predicted noise, which has the same size as the input image.
